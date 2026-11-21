@@ -1,0 +1,26 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+
+# Secrets
+.env
+
+# Generated reachability data (contains your real infrastructure)
+packet_paths_bundle.json
+*.bundle.json
+
+# Node
+node_modules/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local Claude Code config
+.claude/
