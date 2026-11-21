@@ -24,3 +24,6 @@ node_modules/
 
 # Local Claude Code config
 .claude/
+
+# Built frontend (npm run build in bundle-frontend/)
+cartography_reachability/web/

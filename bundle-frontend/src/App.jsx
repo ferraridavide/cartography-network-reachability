@@ -9,7 +9,35 @@ import {
 import * as d3 from "d3";
 import GUI from "lil-gui";
 
-const DATA_URL = import.meta.env.VITE_BUNDLE_DATA_URL || "/packet_paths_bundle.json";
+// Live mode reads from `cartography-reachability serve`; set VITE_BUNDLE_DATA_URL
+// to a static JSON file (from `cartography-reachability export`) to skip the backend.
+const DATA_URL = import.meta.env.VITE_BUNDLE_DATA_URL || "/api/bundle";
+const IS_LIVE = DATA_URL.startsWith("/api/");
+
+async function fetchBundle(refresh = false) {
+  const url = refresh ? `${DATA_URL}?refresh=1` : DATA_URL;
+  const response = await fetch(url);
+  if (!response.ok) {
+    let message = `Unable to load ${url} (HTTP ${response.status})`;
+    try {
+      const body = await response.json();
+      if (body?.error) message = body.error;
+    } catch {
+      // Non-JSON error body: keep the generic message.
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+function formatTraceMeta(meta) {
+  if (!meta?.generated_at) return null;
+  const time = new Date(meta.generated_at).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `Traced from Neo4j at ${time} in ${meta.duration_seconds}s`;
+}
 const EXPORT_SIZE = 4000;
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const EXPORT_SVG_STYLES = `
@@ -1907,6 +1935,7 @@ export function App() {
   const [route, setRoute] = useState(readRoute);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [tracing, setTracing] = useState(false);
   const [search, setSearch] = useState("");
   const [hideIsolated, setHideIsolated] = useState(true);
   const [groupMultiEniResources, setGroupMultiEniResources] = useState(true);
@@ -1919,15 +1948,18 @@ export function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
-  useEffect(() => {
-    fetch(DATA_URL)
-      .then((response) => {
-        if (!response.ok) throw new Error(`Unable to load ${DATA_URL}`);
-        return response.json();
-      })
+  const loadData = useCallback((refresh = false) => {
+    setTracing(true);
+    setError(null);
+    fetchBundle(refresh)
       .then(setData)
-      .catch((err) => setError(err.message));
+      .catch((err) => setError(err.message))
+      .finally(() => setTracing(false));
   }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   useEffect(() => {
     if (route.page === "bundle") {
@@ -1998,11 +2030,35 @@ export function App() {
     setGroupMultiEniResources(value);
   }, []);
 
-  if (error) {
-    return <div className="load-state">Failed to load bundle data: {error}</div>;
+  if (!data && error) {
+    return (
+      <div className="load-state">
+        <div className="load-state-card">
+          <h1>Could not load reachability data</h1>
+          <p className="load-state-error">{error}</p>
+          {IS_LIVE ? (
+            <p>
+              Check that Neo4j is running and that the connection settings passed to{" "}
+              <code>cartography-reachability serve</code> are correct.
+            </p>
+          ) : null}
+          <button type="button" onClick={() => loadData()} disabled={tracing}>
+            {tracing ? "Retrying..." : "Retry"}
+          </button>
+        </div>
+      </div>
+    );
   }
   if (!data) {
-    return <div className="load-state">Loading bundle data...</div>;
+    return (
+      <div className="load-state">
+        <div className="load-state-card">
+          <div className="spinner" aria-hidden="true" />
+          <h1>{IS_LIVE ? "Tracing reachability from Neo4j" : "Loading bundle data"}</h1>
+          {IS_LIVE ? <p>Large estates can take a minute on the first load.</p> : null}
+        </div>
+      </div>
+    );
   }
 
   if (route.page === "rays") {
@@ -2054,7 +2110,22 @@ export function App() {
           >
             Reset
           </button>
+          {IS_LIVE ? (
+            <button
+              type="button"
+              onClick={() => loadData(true)}
+              disabled={tracing}
+              title="Re-read Neo4j and trace reachability again"
+            >
+              {tracing ? "Tracing..." : "Re-trace"}
+            </button>
+          ) : null}
         </div>
+        {error || data.meta ? (
+          <div className={`trace-meta${error ? " error" : ""}`}>
+            {error ? `Re-trace failed: ${error}` : formatTraceMeta(data.meta)}
+          </div>
+        ) : null}
         <div className="stats">
           <div className="stat">
             <b>{visibleCounts.nodes}</b>

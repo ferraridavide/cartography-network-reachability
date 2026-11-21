@@ -455,6 +455,56 @@ h2 {
   color: var(--muted);
 }
 
+.load-state-card {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  max-width: 520px;
+  text-align: center;
+}
+
+.load-state-card h1 {
+  margin: 0;
+  color: var(--text);
+  font-size: 18px;
+}
+
+.load-state-card p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.load-state-error {
+  color: var(--red);
+  overflow-wrap: anywhere;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--line);
+  border-top-color: var(--text);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.trace-meta {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trace-meta.error {
+  color: var(--red);
+}
+
 @media (max-width: 920px) {
   #app {
     grid-template-columns: 1fr;

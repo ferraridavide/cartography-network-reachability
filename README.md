@@ -27,16 +27,18 @@ Useful for network security reviews, least-privilege clean-ups, cloud migrations
 ## How it works
 
 ```
- AWS accounts ──► Cartography ──► Neo4j ──► raytrace-network-paths ──► packet_paths_bundle.json ──► bundle-frontend
-                  (not included)              (this repo, Python)                                   (this repo, React + D3)
-                                                     │
-                                                     └──► cartography-reachability-mcp ──► AI agents (optional)
+                                             ┌──► cartography-reachability serve ──► web UI in your browser
+ AWS accounts ──► Cartography ──► Neo4j ─────┤      (traces on demand, serves the React + D3 frontend)
+                  (not included)             │
+                                             ├──► cartography-reachability export ──► bundle JSON file (offline / sharing)
+                                             │
+                                             └──► cartography-reachability-mcp ──► AI agents (optional)
 ```
 
 1. **Load.** The tracer queries Neo4j for ENIs and their owners (EC2, ECS tasks, Lambda, RDS, ElastiCache, load balancers, VPC endpoints and more), security group rules, route tables, peering connections, Transit Gateway attachments and route tables, and ELBv2 target groups.
 2. **Ray-trace.** For each source ENI, an "all traffic" packet space is narrowed step by step: egress SG rule, then the route chosen by the source subnet's route table, then the destination's ingress SG rule (and ELB listener/target constraints where they apply). Whatever is left is a reachable path.
 3. **Group.** ENIs that belong to the same workload and have identical outgoing paths (an ECS service's tasks, an ASG's instances, an ALB's per-AZ interfaces) are grouped to keep the graph readable.
-4. **Render.** The result is written as one JSON file, which the frontend draws as a hierarchical edge bundle.
+4. **Render.** The result becomes one JSON document that the frontend draws as a hierarchical edge bundle. `serve` builds it in memory when you open the UI; `export` writes it to a file.
 
 > [!NOTE]
 > This project does **not** include or vendor Cartography. It builds on top of a Neo4j database that you have already populated with Cartography's AWS module.
@@ -49,8 +51,8 @@ Useful for network security reviews, least-privilege clean-ups, cloud migrations
 | --- | --- | --- |
 | [Neo4j](https://neo4j.com/download/) | 5.x | Stores the Cartography graph |
 | [Cartography](https://github.com/cartography-cncf/cartography) | recent | Ingests your AWS accounts into Neo4j |
-| Python + [uv](https://docs.astral.sh/uv/) | 3.11+ | Runs the tracer and MCP server |
-| Node.js | 20+ | Runs the frontend |
+| Python + [uv](https://docs.astral.sh/uv/) | 3.11+ | Runs the tracer, web server and MCP server |
+| Node.js | 20+ | Builds the frontend (one time) |
 
 ### 1. Populate Neo4j with Cartography
 
@@ -73,15 +75,17 @@ Use read-only AWS credentials (for example `SecurityAudit` + `ViewOnlyAccess`). 
 ### 2. Install this project
 
 ```bash
-git clone https://github.com/<you>/cartography-reachability.git
+git clone https://github.com/ferraridavide/cartography-network-reachability.git
 ```
 
 ```bash
-cd cartography-reachability && uv sync
+cd cartography-network-reachability && uv sync
 ```
 
+Build the frontend once. It is compiled into the Python package, so the server can serve it:
+
 ```bash
-cd bundle-frontend && npm install
+cd bundle-frontend && npm install && npm run build && cd ..
 ```
 
 ### 3. Configure the Neo4j connection
@@ -92,26 +96,32 @@ cp .env.example .env
 
 Then fill in `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` and optionally `NEO4J_DATABASE`. Every value can also be passed as a CLI flag.
 
-### 4. Trace reachability
-
-Write the bundle straight into the frontend's `public/` folder:
+### 4. Start the UI
 
 ```bash
-uv run raytrace-network-paths --output bundle-frontend/public/packet_paths_bundle.json
+uv run cartography-reachability serve --open
 ```
 
-On a few hundred ENIs this takes seconds. For very large estates, start with a filter or a limit (see [CLI reference](#cli-reference)).
-
-### 5. Explore it
-
-```bash
-cd bundle-frontend && npm run dev
-```
-
-Open http://127.0.0.1:5173.
+This opens http://127.0.0.1:8000. The first page load reads Neo4j and traces reachability; on a few hundred ENIs that takes seconds. The result is cached in memory: after a new Cartography sync, click **Re-trace** in the side panel to rebuild it without restarting the server.
 
 > [!WARNING]
-> The generated JSON describes your real network: account IDs, IPs, security groups and resource names. `packet_paths_bundle.json` is git-ignored; keep it that way.
+> The server has no authentication and shows your real network: account IDs, IPs, security groups and resource names. It binds to `127.0.0.1` by default; don't expose it on a shared network without putting authentication in front of it.
+
+### Alternative: export a static file
+
+To share a snapshot or view it without Neo4j access, trace once into a file:
+
+```bash
+uv run cartography-reachability export --output bundle-frontend/public/packet_paths_bundle.json
+```
+
+Then view it with the frontend dev server pointed at that file:
+
+```bash
+cd bundle-frontend && VITE_BUNDLE_DATA_URL=/packet_paths_bundle.json npm run dev
+```
+
+`packet_paths_bundle.json` is git-ignored, and `npm run build` never copies `public/` into the build, so exported data can't end up in a commit or a package by accident.
 
 ## Using the frontend
 
@@ -145,45 +155,62 @@ From a single (non-grouped) ENI, open **Show node outbound rays** or **Show node
 
 ![Outbound ray tree for a single ECS service](docs/images/ray-tree.png)
 
-### Loading a different file
+### Developing the frontend
 
-The frontend loads `/packet_paths_bundle.json` by default. To point it elsewhere:
+Run the backend and the Vite dev server side by side. Vite proxies `/api` to the backend (override the target with `REACHABILITY_API_URL`):
 
 ```bash
-VITE_BUNDLE_DATA_URL=/other-environment.json npm run dev
+uv run cartography-reachability serve
 ```
 
-`npm run build` produces a static site in `bundle-frontend/dist/` that you can host anywhere next to your JSON file. Serve it with an SPA fallback to `index.html`, because the ray pages use `/rays/...` paths.
+```bash
+cd bundle-frontend && npm run dev
+```
 
 ## CLI reference
 
 ```text
-uv run raytrace-network-paths [options]
+uv run cartography-reachability serve  [options]   # web UI, traces live from Neo4j
+uv run cartography-reachability export [options]   # trace once, write bundle JSON
 ```
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `--uri` | `$NEO4J_URI` or `bolt://localhost:7687` | Neo4j Bolt URI |
-| `--user` | `$NEO4J_USER` or `neo4j` | Neo4j user |
-| `--password` | `$NEO4J_PASSWORD` | Neo4j password (required) |
-| `--database` | `$NEO4J_DATABASE` | Neo4j database (server default if empty) |
-| `--source` | all | Only trace from ENIs matching an ENI ID, owner ID/name, private or public IP |
-| `--destination` | all | Only keep paths to ENIs matching the same kinds of values |
-| `--source-limit` | `0` (no limit) | Max source ENIs to trace |
-| `--pair-limit` | `0` (no limit) | Max source/destination pairs to evaluate |
-| `--path-limit` | `0` (no limit) | Max paths to emit |
-| `--output` | `packet_paths_bundle.json` | Output file |
-| `--[no-]group-identical-rays` | on | Group ENIs of the same workload that have identical outgoing paths |
+`raytrace-network-paths` is kept as a shortcut for `cartography-reachability export`.
+
+| Option | Commands | Default | Description |
+| --- | --- | --- | --- |
+| `--host` | serve | `127.0.0.1` | Address to bind |
+| `--port` | serve | `8000` | Port to listen on |
+| `--open` | serve | off | Open the UI in your browser |
+| `--output` | export | `packet_paths_bundle.json` | Output file |
+| `--uri` | both | `$NEO4J_URI` or `bolt://localhost:7687` | Neo4j Bolt URI |
+| `--user` | both | `$NEO4J_USER` or `neo4j` | Neo4j user |
+| `--password` | both | `$NEO4J_PASSWORD` | Neo4j password (required) |
+| `--database` | both | `$NEO4J_DATABASE` | Neo4j database (server default if empty) |
+| `--source` | both | all | Only trace from ENIs matching an ENI ID, owner ID/name, private or public IP |
+| `--destination` | both | all | Only keep paths to ENIs matching the same kinds of values |
+| `--source-limit` | both | `0` (no limit) | Max source ENIs to trace |
+| `--pair-limit` | both | `0` (no limit) | Max source/destination pairs to evaluate |
+| `--path-limit` | both | `0` (no limit) | Max paths to emit |
+| `--[no-]group-identical-rays` | both | on | Group ENIs of the same workload that have identical outgoing paths |
 
 Examples:
 
 ```bash
-uv run raytrace-network-paths --source 10.0.12.34 --output bundle-frontend/public/packet_paths_bundle.json
+uv run cartography-reachability serve --destination prod-postgres
 ```
 
 ```bash
-uv run raytrace-network-paths --destination prod-postgres --output bundle-frontend/public/packet_paths_bundle.json
+uv run cartography-reachability export --source 10.0.12.34 --output snapshot.json
 ```
+
+### HTTP API
+
+`serve` exposes two endpoints, which the UI uses and you can script against:
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/bundle` | The bundle JSON (traced on first call, then cached). Add `?refresh=1` to trace again. |
+| `GET /api/status` | Connection info (never the password), whether a trace is running, last trace time and duration, last error |
 
 ## MCP server (optional)
 
@@ -222,16 +249,18 @@ Example client configuration (Claude Code `.mcp.json`, Claude Desktop, VS Code a
 
 ```
 .
-├── cartography_reachability/   # Tracer: Neo4j loader, ray tracer, grouping, bundle JSON renderer, CLI
+├── cartography_reachability/   # Tracer, web server and CLI
 │   ├── loader.py               #   Cypher queries against the Cartography schema
 │   ├── tracer.py               #   SG → route → (TGW / ELB) → SG packet-space tracing
 │   ├── overview.py             #   Workload grouping of ENIs
-│   ├── renderers/bundle.py     #   Output format consumed by the frontend
-│   └── cli.py                  #   `raytrace-network-paths`
+│   ├── renderers/bundle.py     #   Bundle JSON consumed by the frontend
+│   ├── server.py               #   Starlette app: /api/* + the built frontend
+│   ├── cli.py                  #   `cartography-reachability serve|export`
+│   └── web/                    #   Frontend build output (git-ignored, shipped in wheels)
 ├── reachability_mcp/           # Optional MCP server (`cartography-reachability-mcp`) + agent prompt
-├── bundle-frontend/            # React + D3 + Vite viewer
+├── bundle-frontend/            # React + D3 + Vite viewer (builds into cartography_reachability/web)
 │   ├── src/App.jsx
-│   └── public/                 #   Put packet_paths_bundle.json here (git-ignored)
+│   └── public/                 #   Exported JSON for static mode (git-ignored, never built)
 ├── tests/                      # unittest suite (fixtures are synthetic)
 ├── docs/images/                # README screenshots
 ├── .env.example
